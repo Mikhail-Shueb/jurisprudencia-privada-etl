@@ -87,6 +87,12 @@ export const ConflictsProps: Record<JurisprudenciaDocumentExactKey | Jurispruden
             "New": { type: "keyword" }
         }
     },
+    PDF: {
+        properties: {
+            "Current": { type: "keyword" },
+            "New": { type: "keyword" }
+        }
+    },
 
 }
 
