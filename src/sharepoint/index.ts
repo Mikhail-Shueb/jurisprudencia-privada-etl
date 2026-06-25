@@ -21,7 +21,12 @@ async function main() {
     if (FLAG_HELP) return showHelp(0);
     let existsR = await client.indices.exists({ index: JurisprudenciaVersion }, { ignore: [404] });
     if (!existsR) {
-        return showHelp(1, `${JurisprudenciaVersion} not found`);
+        // On a fresh deployment the new index may not exist yet (it's created by
+        // a separate step that owns its schema). Skip this run gracefully and
+        // exit 0 instead of failing, so the cron keeps retrying and starts
+        // working automatically once the index has been created.
+        console.log(`${JurisprudenciaVersion} not found yet — skipping this run, will retry next cron.`);
+        return;
     }
     updateDrives();
 }
