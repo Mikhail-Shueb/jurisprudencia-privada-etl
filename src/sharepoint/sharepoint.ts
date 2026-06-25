@@ -253,7 +253,7 @@ async function processFileItem(
     }
 
     const retrievable_metadata: Retrievable_Metadata = getRetrievableMetadata(retrievable_metadata_tables[folderKey], sharepoint_metadata);
-    if (normalizeString(path.basename(sharepoint_metadata.sharepoint_path_rel)).includes(normalizeString("Sumário"))) {
+    if (isSumarioDocument(retrievable_metadata_tables[folderKey], sharepoint_metadata)) {
         retrievable_metadata.process_mean.push("Sumário");
     }
 
@@ -380,7 +380,7 @@ async function scanFolderForMissingFiles(
             }
 
             const retrievable_metadata = getRetrievableMetadata(retrievable_metadata_tables[folderKey], sharepoint_metadata);
-            const isSumario = normalizeString(path.basename(sharepoint_metadata.sharepoint_path_rel)).includes(normalizeString("Sumário"));
+            const isSumario = isSumarioDocument(retrievable_metadata_tables[folderKey], sharepoint_metadata);
             const formattedDate = Intl.DateTimeFormat("pt-PT").format(date_area_section.file_date);
 
             if (await isAlreadyIntroduced(retrievable_metadata.process_number, formattedDate, isSumario)) {
@@ -582,9 +582,23 @@ async function parseMetadataTable(buffer: Buffer): Promise<Row[]> {
     });
 }
 
-function getRetrievableMetadata(retrievable_metadata_table: Retrievable_Metadata_Table, sharepoint_metadata: Sharepoint_Metadata): Retrievable_Metadata {
+// Finds the metadata-table key (process number) matching this file, if any.
+function findMetadataKey(retrievable_metadata_table: Retrievable_Metadata_Table, sharepoint_metadata: Sharepoint_Metadata): string | undefined {
     const original_file_name: string = path.basename(sharepoint_metadata.sharepoint_path_rel).replace(/-/g, "/");
-    const matchedKey = Object.keys(retrievable_metadata_table).find((k) => original_file_name.includes(k.replace(/-/g, "/")));
+    return Object.keys(retrievable_metadata_table).find((k) => original_file_name.includes(k.replace(/-/g, "/")));
+}
+
+// A file is only treated as a Sumário when its name says so AND it has a real table
+// entry (process number + metadata). A "sumário"-named file with no table is a
+// standalone decision, so it's imported as Texto instead — otherwise the doc has no
+// Texto and the anonimizador round-trip fails with "text doesn't exist" on send-back.
+function isSumarioDocument(retrievable_metadata_table: Retrievable_Metadata_Table, sharepoint_metadata: Sharepoint_Metadata): boolean {
+    const filenameSaysSumario = normalizeString(path.basename(sharepoint_metadata.sharepoint_path_rel)).includes(normalizeString("Sumário"));
+    return filenameSaysSumario && findMetadataKey(retrievable_metadata_table, sharepoint_metadata) !== undefined;
+}
+
+function getRetrievableMetadata(retrievable_metadata_table: Retrievable_Metadata_Table, sharepoint_metadata: Sharepoint_Metadata): Retrievable_Metadata {
+    const matchedKey = findMetadataKey(retrievable_metadata_table, sharepoint_metadata);
     if (!matchedKey) {
         const file_name = path.basename(sharepoint_metadata.sharepoint_path_rel, path.extname(sharepoint_metadata.sharepoint_path_rel));
         return { process_number: file_name, judge: "", process_mean: [], decision: "" };
