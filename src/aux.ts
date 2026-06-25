@@ -31,6 +31,18 @@ export async function terminateUpdate(update: FilesystemUpdate, message: string,
         target: JurisprudenciaVersion,
     }
     console.log(message);
+
+    // If this run found nothing new and hit no errors, don't persist a new
+    // update. writeFilesystemUpdate replaces the previous log on disk, so writing
+    // an empty run would discard the last meaningful update. Keeping the previous
+    // one means its delta_link stays the resume point for future runs.
+    const hasChanges = (update.created_num || 0) > 0 || (update.updated_num || 0) > 0 || (update.deleted_num || 0) > 0;
+    const hasErrors = update.file_errors.length > 0;
+    if (!hasChanges && !hasErrors) {
+        console.log(`No changes and no errors — keeping the previous update for "${source}".`);
+        return;
+    }
+
     try {
         writeFilesystemUpdate(update, source);
         console.log(info);
