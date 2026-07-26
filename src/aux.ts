@@ -1,7 +1,21 @@
 import { ContentType, Date_Area_Section, DescritorOficial, extractContent, FilesystemUpdate, Retrievable_Metadata, Sharepoint_Metadata, SupportedUpdateSources, writeFilesystemUpdate } from "@stjiris/filesystem-lib";
 import { JSDOM } from "jsdom";
 import { report, Report } from "./report/report.js";
-import { calculateHASH, calculateUUID, JurisprudenciaDocument, JurisprudenciaVersion, PartialJurisprudenciaDocument } from "@stjiris/jurisprudencia-document";
+import { calculateHASH, calculateUUID, ControlledField, GenericField, JurisprudenciaDocument, JurisprudenciaVersion, matchCanonical, PartialJurisprudenciaDocument } from "@stjiris/jurisprudencia-document";
+
+// Collapse incoming sharepoint metadata onto the canonical vocabulary. Original keeps
+// the raw value from the *tabela*.pdf; whatever cannot be matched keeps its raw text in
+// Show/Index and is left for the editor (documents land in STATE "importação").
+//
+// Matching is fold-exact (threshold 1) rather than fuzzy: foldValue already ignores case,
+// accents, whitespace and edge punctuation, so "Habeas Corpus" and "recurso de revista."
+// still match, while the fuzzy default would map "Recurso de revisão" onto the legally
+// different "Recurso de revista". At ingest a missed match costs a manual edit, a wrong
+// match silently corrupts the field.
+function canonicalField(field: ControlledField, raw: string[]): GenericField {
+    const normalized = raw.map(v => matchCanonical(field, v, 1).value);
+    return { Original: raw, Show: normalized, Index: normalized };
+}
 
 export async function JSDOMfromURL(url: string, retries: number = 10) {
     let start = Date.now();
@@ -101,13 +115,13 @@ export async function createJurisprudenciaDocument(retrievable_Metadata: Retriev
         obj.Secção = { Index: [date_area_section.section], Original: [date_area_section.section], Show: [date_area_section.section] };
     }
     if (retrievable_Metadata.judge && retrievable_Metadata.judge.length > 0) {
-        obj["Relator Nome Profissional"] = { Index: [retrievable_Metadata.judge], Original: [retrievable_Metadata.judge], Show: [retrievable_Metadata.judge] };
+        obj["Relator Nome Profissional"] = canonicalField("Relator Nome Profissional", [retrievable_Metadata.judge]);
     }
     if (retrievable_Metadata.process_mean && retrievable_Metadata.process_mean.length > 0) {
-        obj["Meio Processual"] = { Index: retrievable_Metadata.process_mean, Original: retrievable_Metadata.process_mean, Show: retrievable_Metadata.process_mean };
+        obj["Meio Processual"] = canonicalField("Meio Processual", retrievable_Metadata.process_mean);
     }
     if (retrievable_Metadata.decision && retrievable_Metadata.decision.length > 0) {
-        obj["Decisão"] = { Index: [retrievable_Metadata.decision], Original: [retrievable_Metadata.decision], Show: [retrievable_Metadata.decision] };
+        obj["Decisão"] = canonicalField("Decisão", [retrievable_Metadata.decision]);
     }
 
     obj["HASH"] = calculateHASH({
