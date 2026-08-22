@@ -5,7 +5,8 @@
   "main": "sharepoint/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && node dist/sharepoint/index.js"
+    "start": "npm run build && node dist/sharepoint/index.js",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --config jest.config.ts"
   },
   "type": "module",
   "keywords": [],
@@ -41,6 +42,7 @@
     "@types/express": "^4.17.25",
     "@types/http-errors": "^2.0.5",
     "@types/istanbul-lib-report": "^3.0.3",
+    "@types/jest": "^30.0.0",
     "@types/jsdom": "^21.1.3",
     "@types/node": "^20.19.24",
     "@types/pdf-parse": "^1.1.5",

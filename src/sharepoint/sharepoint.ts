@@ -11,6 +11,7 @@ import path from "path";
 import { spawn } from "child_process";
 import { estypes } from "@elastic/elasticsearch";
 import { createJurisprudenciaDocument, terminateUpdate } from "../aux.js";
+import { parseFilename } from "./filename-parser.js";
 
 dotenv.config({ override: true });
 const tenantId = envOrFail("TENANT_ID");
@@ -116,6 +117,13 @@ async function mergeIntoDocument(existingId: string, existing: JurisprudenciaDoc
     const newContent = newDoc.CONTENT?.filter(c => !existing.CONTENT?.includes(c)) || [];
     if (newContent.length > 0) {
         update.CONTENT = [...(existing.CONTENT || []), ...newContent];
+    }
+
+    // Merge Descritores if the new doc has them and existing doesn't
+    const existingDescritores = existing["Descritores"]?.Original ?? [];
+    const newDescritores = newDoc["Descritores"]?.Original ?? [];
+    if (existingDescritores.length === 0 && newDescritores.length > 0) {
+        update["Descritores"] = newDoc["Descritores"]!;
     }
 
     // If the existing doc was the sumário doc, strip "Sumário" from Meio Processual
@@ -253,7 +261,13 @@ async function processFileItem(
     }
 
     const retrievable_metadata: Retrievable_Metadata = getRetrievableMetadata(retrievable_metadata_tables[folderKey], sharepoint_metadata);
+    const parsedFile = parseFilename(path.basename(sharepoint_metadata.sharepoint_path_rel));
+
     if (isSumarioDocument(retrievable_metadata_tables[folderKey], sharepoint_metadata)) {
+        retrievable_metadata.process_mean.push("Sumário");
+    }
+
+    if (parsedFile.hasEmbeddedSumario) {
         retrievable_metadata.process_mean.push("Sumário");
     }
 
@@ -582,28 +596,55 @@ async function parseMetadataTable(buffer: Buffer): Promise<Row[]> {
     });
 }
 
-// Finds the metadata-table key (process number) matching this file, if any.
 function findMetadataKey(retrievable_metadata_table: Retrievable_Metadata_Table, sharepoint_metadata: Sharepoint_Metadata): string | undefined {
-    const original_file_name: string = path.basename(sharepoint_metadata.sharepoint_path_rel).replace(/-/g, "/");
-    return Object.keys(retrievable_metadata_table).find((k) => original_file_name.includes(k.replace(/-/g, "/")));
+    const filename = path.basename(sharepoint_metadata.sharepoint_path_rel);
+    const parsed = parseFilename(filename);
+    const processNum = parsed.nrProcesso.replace(/-/g, "/");
+
+    const exactMatch = Object.keys(retrievable_metadata_table).find(
+        (k) => k.replace(/-/g, "/") === processNum
+    );
+    if (exactMatch) return exactMatch;
+
+    const containsMatch = Object.keys(retrievable_metadata_table).find(
+        (k) => processNum.includes(k.replace(/-/g, "/"))
+    );
+    return containsMatch;
 }
 
-// A file is only treated as a Sumário when its name says so AND it has a real table
-// entry (process number + metadata). A "sumário"-named file with no table is a
-// standalone decision, so it's imported as Texto instead — otherwise the doc has no
-// Texto and the anonimizador round-trip fails with "text doesn't exist" on send-back.
+// A standalone Sumário file (Pattern A _Sumário or Pattern B - Sumário) is treated
+// as sumário only when it has a table entry. A file with no table entry is imported as
+// Texto to avoid the anonimizador "text doesn't exist" error on send-back.
+// Files with embedded sumário (Pattern A _Acórdão_sumário, Pattern C +Sumário) are
+// NOT standalone sumários — they are acórdãos whose content includes the sumário.
 function isSumarioDocument(retrievable_metadata_table: Retrievable_Metadata_Table, sharepoint_metadata: Sharepoint_Metadata): boolean {
-    const filenameSaysSumario = normalizeString(path.basename(sharepoint_metadata.sharepoint_path_rel)).includes(normalizeString("Sumário"));
-    return filenameSaysSumario && findMetadataKey(retrievable_metadata_table, sharepoint_metadata) !== undefined;
+    const filename = path.basename(sharepoint_metadata.sharepoint_path_rel);
+    const parsed = parseFilename(filename);
+
+    if (parsed.tipoDocumento !== "sumario") return false;
+
+    return findMetadataKey(retrievable_metadata_table, sharepoint_metadata) !== undefined;
 }
 
 function getRetrievableMetadata(retrievable_metadata_table: Retrievable_Metadata_Table, sharepoint_metadata: Sharepoint_Metadata): Retrievable_Metadata {
+    const filename = path.basename(sharepoint_metadata.sharepoint_path_rel);
+    const parsed = parseFilename(filename);
     const matchedKey = findMetadataKey(retrievable_metadata_table, sharepoint_metadata);
+
     if (!matchedKey) {
-        const file_name = path.basename(sharepoint_metadata.sharepoint_path_rel, path.extname(sharepoint_metadata.sharepoint_path_rel));
-        return { process_number: file_name, judge: "", process_mean: [], decision: "" };
+        return {
+            process_number: parsed.nrProcesso,
+            judge: parsed.relator || "",
+            process_mean: [],
+            decision: "",
+        };
     }
-    return retrievable_metadata_table[matchedKey];
+
+    const tableEntry = retrievable_metadata_table[matchedKey];
+    if (!tableEntry.judge && parsed.relator) {
+        tableEntry.judge = parsed.relator;
+    }
+    return tableEntry;
 }
 
 function readSharepoint_Metadata(drive_item: any, drive_name: string, drive_id: string): Sharepoint_Metadata {
