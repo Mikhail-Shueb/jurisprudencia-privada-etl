@@ -12,8 +12,19 @@ import { calculateHASH, calculateUUID, ControlledField, GenericField, Jurisprude
 // still match, while the fuzzy default would map "Recurso de revisão" onto the legally
 // different "Recurso de revista". At ingest a missed match costs a manual edit, a wrong
 // match silently corrupts the field.
+// no match -> use the field's catch-all instead of keeping the raw value (raw stays in Original)
+const CONTROLLED_FALLBACK: Partial<Record<ControlledField, string>> = {
+    "Decisão": "Sem informação",
+    "Meio Processual": "Outro",
+    "Relator Nome Profissional": "Sem informação",
+    "Votação": "Sem informação",
+};
+
 function canonicalField(field: ControlledField, raw: string[]): GenericField {
-    const normalized = raw.map(v => matchCanonical(field, v, 1).value);
+    const normalized = raw.map(v => {
+        const m = matchCanonical(field, v, 1);
+        return m.matched ? m.value : (CONTROLLED_FALLBACK[field] ?? m.value);
+    });
     return { Original: raw, Show: normalized, Index: normalized };
 }
 
