@@ -1,7 +1,9 @@
-import { calculateUUID, HASHField, JurisprudenciaDocument, JurisprudenciaDocumentDateKey, JurisprudenciaDocumentGenericKey, JurisprudenciaDocumentKey, JurisprudenciaDocumentKeys, JurisprudenciaVersion, PartialJurisprudenciaDocument, isJurisprudenciaDocumentContentKey, isJurisprudenciaDocumentDateKey, isJurisprudenciaDocumentExactKey, isJurisprudenciaDocumentGenericKey, isJurisprudenciaDocumentHashKey, isJurisprudenciaDocumentObjectKey, isJurisprudenciaDocumentStateKey, isJurisprudenciaDocumentTextKey, JurisprudenciaDocumentProperties, JurisprudenciaDocumentExactKey, calculateHASH } from "@stjiris/jurisprudencia-document";
+import { calculateUUID, HASHField, JurisprudenciaDocument, JurisprudenciaDocumentDateKey, JurisprudenciaDocumentGenericKey, JurisprudenciaDocumentKey, JurisprudenciaDocumentKeys, JurisprudenciaVersion, PartialJurisprudenciaDocument, isJurisprudenciaDocumentContentKey, isJurisprudenciaDocumentDateKey, isJurisprudenciaDocumentExactKey, isJurisprudenciaDocumentGenericKey, isJurisprudenciaDocumentHashKey, isJurisprudenciaDocumentObjectKey, isJurisprudenciaDocumentStateKey, isJurisprudenciaDocumentTextKey, JurisprudenciaDocumentProperties, JurisprudenciaDocumentExactKey, calculateHASH, calculateSHA1 } from "@stjiris/jurisprudencia-document";
 import { JSDOM } from "jsdom";
 import { client } from "./client";
 import { createHash } from "crypto";
+import fs from "fs";
+import path from "path";
 import { DescritorOficial } from "./descritor-oficial";
 import { IndexResponse, UpdateResponse, WriteResponseBase } from "@elastic/elasticsearch/lib/api/types";
 import { conflicts } from "./report";
@@ -164,13 +166,144 @@ function testEmptyHTML(text: string) {
     }).then(r => r.tokens?.every(t => t.token.length === 0))
 }
 
+const IMAGES_DIR = process.env.IMAGES_PATH || path.join(process.cwd(), "images");
+
+async function downloadAndSaveImage(
+    url: string,
+    uuid: string,
+    index: number,
+    imagesDir: string = IMAGES_DIR
+): Promise<string | null> {
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+
+        const res = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+                "User-Agent": "Mozilla/5.0 (compatible; STJ-Iris-Crawler/1.0)"
+            }
+        });
+        clearTimeout(timeout);
+
+        if (!res.ok) {
+            console.error(`[ETL Image] HTTP ${res.status} fetching image from ${url}`);
+            return null;
+        }
+
+        const buffer = Buffer.from(await res.arrayBuffer());
+        if (buffer.length === 0) return null;
+
+        // Detect extension from Content-Type or query/url
+        const contentType = res.headers.get("content-type") || "";
+        let ext = ".gif";
+        if (contentType.includes("gif") || url.toLowerCase().includes("format=gif")) {
+            ext = ".gif";
+        } else if (contentType.includes("jpeg") || contentType.includes("jpg") || url.toLowerCase().includes("format=jpg")) {
+            ext = ".jpg";
+        } else if (contentType.includes("png") || url.toLowerCase().includes("format=png")) {
+            ext = ".png";
+        } else if (contentType.includes("webp")) {
+            ext = ".webp";
+        } else if (contentType.includes("bmp")) {
+            ext = ".bmp";
+        }
+
+        const filename = `${uuid}_${index}${ext}`;
+        const targetPath = path.join(imagesDir, filename);
+
+        await fs.promises.mkdir(imagesDir, { recursive: true });
+        await fs.promises.writeFile(targetPath, buffer);
+        console.log(`[ETL Image] Saved image ${filename} (${buffer.length} bytes) to ${targetPath}`);
+        return filename;
+    } catch (err) {
+        console.error(`[ETL Image] Failed to download image from ${url}:`, err);
+        return null;
+    }
+}
+
+async function processImagesInCell(
+    cell: HTMLTableCellElement | undefined,
+    uuid: string,
+    baseUrl: string,
+    imagesDir: string = IMAGES_DIR,
+    startIndex: number = 1
+): Promise<{ hasImages: boolean; nextIndex: number }> {
+    if (!cell) return { hasImages: false, nextIndex: startIndex };
+    const imgs = Array.from(cell.querySelectorAll("img"));
+    if (imgs.length === 0) return { hasImages: false, nextIndex: startIndex };
+
+    let hasImages = false;
+    let currentIndex = startIndex;
+
+    for (const img of imgs) {
+        const originalSrc = img.getAttribute("src");
+        if (!originalSrc) continue;
+
+        try {
+            const absoluteUrl = (originalSrc.startsWith("http://") || originalSrc.startsWith("https://"))
+                ? originalSrc
+                : new URL(originalSrc, baseUrl).toString();
+
+            const savedFilename = await downloadAndSaveImage(absoluteUrl, uuid, currentIndex, imagesDir);
+            if (savedFilename) {
+                img.setAttribute("src", `/api/images/${savedFilename}`);
+                hasImages = true;
+                currentIndex++;
+            }
+        } catch (err) {
+            console.error(`[ETL Image] Error resolving/saving image from ${originalSrc}:`, err);
+        }
+    }
+
+    return { hasImages, nextIndex: currentIndex };
+}
+
 function stripHTMLAttributes(text: string) {
     let regex = /<(?<closing>\/?)(?<tag>\w+)(?<attrs>[^>]*)>/g;
     var comments = /<!--[\s\S]*?-->/gi;
-    return text.replace(comments, '').replace(regex, "<$1$2>");
+    return text.replace(comments, '').replace(regex, (match, closing, tag, attrs) => {
+        if (tag.toLowerCase() === 'img') {
+            const allowed = ["src", "width", "height", "alt", "style"];
+            const kept: string[] = [];
+            const attrPattern = /(?<name>[\w\-]+)=(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+            let m;
+            while ((m = attrPattern.exec(attrs)) !== null) {
+                const attrName = m.groups?.name?.toLowerCase();
+                if (attrName && allowed.includes(attrName)) {
+                    kept.push(m[0]);
+                }
+            }
+            return `<${closing}${tag}${kept.length > 0 ? " " + kept.join(" ") : ""}>`;
+        }
+        return `<${closing}${tag}>`;
+    });
 }
 
-async function addSumarioAndTexto(obj: PartialJurisprudenciaDocument, table: Record<string, HTMLTableCellElement | undefined>) {
+async function addSumarioAndTexto(
+    obj: PartialJurisprudenciaDocument,
+    table: Record<string, HTMLTableCellElement | undefined>,
+    docUUID: string,
+    sourceUrl: string
+) {
+    let imgIdx = 1;
+    let sumImages = false;
+    let texImages = false;
+
+    if (table.Sumário) {
+        const res = await processImagesInCell(table.Sumário, docUUID, sourceUrl, IMAGES_DIR, imgIdx);
+        sumImages = res.hasImages;
+        imgIdx = res.nextIndex;
+    }
+
+    if (table["Decisão Texto Integral"]) {
+        const res = await processImagesInCell(table["Decisão Texto Integral"], docUUID, sourceUrl, IMAGES_DIR, imgIdx);
+        texImages = res.hasImages;
+        imgIdx = res.nextIndex;
+    }
+
+    (obj as any).hasImages = sumImages || texImages;
+
     let sum = table.Sumário?.innerHTML || "";
     let tex = table["Decisão Texto Integral"]?.innerHTML || "";
     let [emptySum, emptyTex] = await Promise.all([testEmptyHTML(sum), testEmptyHTML(tex)]);
@@ -255,8 +388,19 @@ export async function createJurisprudenciaDocumentFromURL(url: string) {
     addGenericField(obj, "Referências Internacionais", table, "Referências Internacionais")
     addGenericField(obj, "Referência de publicação", table, "Referência de publicação")
     addGenericField(obj, "Indicações Eventuais", table, "Indicações Eventuais")
+    const tempHash = {
+        Original: "",
+        Processo: calculateSHA1(numProc || ""),
+        Data: calculateSHA1(Data || ""),
+        "Meio Processual": calculateSHA1((obj["Meio Processual"] as any)?.Original || ""),
+        Sumário: "",
+        "Sumário Não Anonimizado": "",
+        Texto: "",
+        "Texto Não Anonimizado": ""
+    };
+    const docUUID = calculateUUID(tempHash as any);
 
-    await addSumarioAndTexto(obj, table)
+    await addSumarioAndTexto(obj, table, docUUID, url);
 
     obj["HASH"] = calculateHASH({
         ...obj,
@@ -339,6 +483,10 @@ export async function updateJurisprudenciaDocumentFromURL(id: string, url: strin
             updateObject[key] = newObject[key];
         };
         if (isJurisprudenciaDocumentStateKey(key)) continue;
+    }
+
+    if ((newObject as any).hasImages !== undefined) {
+        (updateObject as any).hasImages = (newObject as any).hasImages;
     }
 
     updateObject["HASH"] = calculateHASH({
