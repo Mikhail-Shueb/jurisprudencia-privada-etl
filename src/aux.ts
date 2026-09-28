@@ -13,9 +13,9 @@ import { calculateHASH, calculateUUID, ControlledField, GenericField, Jurisprude
 // different "Recurso de revista". At ingest a missed match costs a manual edit, a wrong
 // match silently corrupts the field.
 // no match -> use the field's catch-all instead of keeping the raw value (raw stays in Original)
-const CONTROLLED_FALLBACK: Partial<Record<ControlledField, string>> = {
+const CONTROLLED_FALLBACK: Record<ControlledField, string> = {
     "Decisão": "Sem informação",
-    "Meio Processual": "Outro",
+    "Meio Processual": "Sem informação",
     "Relator Nome Profissional": "Sem informação",
     "Votação": "Sem informação",
 };
@@ -23,7 +23,7 @@ const CONTROLLED_FALLBACK: Partial<Record<ControlledField, string>> = {
 function canonicalField(field: ControlledField, raw: string[]): GenericField {
     const normalized = raw.map(v => {
         const m = matchCanonical(field, v, 1);
-        return m.matched ? m.value : (CONTROLLED_FALLBACK[field] ?? m.value);
+        return m.matched ? m.value : (CONTROLLED_FALLBACK[field] ?? "Sem informação");
     });
     return { Original: raw, Show: normalized, Index: normalized };
 }
