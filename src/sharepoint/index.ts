@@ -28,7 +28,24 @@ async function main() {
         console.log(`${JurisprudenciaVersion} not found yet — skipping this run, will retry next cron.`);
         return;
     }
-    updateDrives();
+    try {
+        await updateDrives();
+    } catch (err: unknown) {
+        const error = err as any;
+        const msg = error?.message || error?.body || String(err);
+        
+        if (msg.includes("AADSTS7000222") || msg.includes("expired") || error?.code === "AuthenticationRequiredError") {
+            console.error(`\n[ERRO CRÍTICO - SHAREPOINT ETL] Falha de Autenticação no Azure AD:`);
+            console.error(`O Client Secret da aplicação expirou (AADSTS7000222).`);
+            console.error(`É necessário gerar um novo Client Secret no portal Azure e atualizar a variável CLIENT_SECRET.\n`);
+        } else {
+            console.error(`\n[ERRO - SHAREPOINT ETL] Ocorreu uma exceção durante a execução do ETL:`);
+        }
+        throw err;
+    }
 }
 
-main().catch((e) => console.error(e));
+main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+});
